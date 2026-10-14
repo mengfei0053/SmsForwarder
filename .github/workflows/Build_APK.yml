@@ -30,7 +30,45 @@ jobs:
           java-version: "11"
           cache: gradle
 
+      - name: Resolve build type
+        id: bt
+        run: |
+          BT="${{ github.event.inputs.build_type }}"
+          if [ -z "$BT" ]; then BT=debug; fi
+          echo "build_type=$BT" >> "$GITHUB_OUTPUT"
+          echo "Using build_type=$BT"
+
+      - name: Prepare release keystore from secrets
+        if: steps.bt.outputs.build_type == 'release'
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SIGNING_KEYSTORE_BASE64:-}" ] || [ -z "${SIGNING_STORE_PASSWORD:-}" ] \
+             || [ -z "${SIGNING_KEY_ALIAS:-}" ] || [ -z "${SIGNING_KEY_PASSWORD:-}" ]; then
+            echo "::error::Missing release signing secrets (SIGNING_KEYSTORE_BASE64 / STORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD)"
+            exit 1
+          fi
+          mkdir -p keystore
+          echo "$SIGNING_KEYSTORE_BASE64" | base64 -d > keystore/smsforwarder-release.jks
+          # storeFile is resolved via file() in app/build.gradle → relative to app/
+          printf '%s\n' \
+            'storeFile=../keystore/smsforwarder-release.jks' \
+            "storePassword=${SIGNING_STORE_PASSWORD}" \
+            "keyAlias=${SIGNING_KEY_ALIAS}" \
+            "keyPassword=${SIGNING_KEY_PASSWORD}" \
+            > keystore/keystore.properties
+          # sanity: list aliases without printing passwords
+          keytool -list -keystore keystore/smsforwarder-release.jks \
+            -storepass "$SIGNING_STORE_PASSWORD" | head -20
+          echo "keystore.properties keys present (values redacted):"
+          cut -d= -f1 keystore/keystore.properties
+
       - name: Create debug keystore
+        if: steps.bt.outputs.build_type != 'release'
         run: |
           mkdir -p keystore
           keytool -genkeypair -v \
@@ -48,8 +86,6 @@ jobs:
             'keyAlias=androiddebugkey' \
             'keyPassword=android' \
             > keystore/keystore.properties
-          echo "keystore.properties:"
-          cat keystore/keystore.properties
 
       - name: Tune Gradle for CI
         run: |
@@ -57,7 +93,7 @@ jobs:
           sed -i 's/org.gradle.jvmargs=.*/org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8/' gradle.properties
           # avoid preBuild clean on CI
           sed -i 's/isNeedClean=.*/isNeedClean=false/' gradle.properties
-          # we have a local debug keystore
+          # use keystore/keystore.properties signingConfigs
           sed -i 's/isNeedPackage=.*/isNeedPackage=true/' gradle.properties
           # Keep only aliyun "public" (hosts jcenter leftovers). Drop aliyun
           # google/central mirrors — they 502/404 and break Gradle resolution.
@@ -76,10 +112,9 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build APK
-        env:
-          BUILD_TYPE: ${{ github.event.inputs.build_type || 'debug' }}
         run: |
-          if [ "$BUILD_TYPE" = "release" ]; then
+          BT="${{ steps.bt.outputs.build_type }}"
+          if [ "$BT" = "release" ]; then
             ./gradlew assembleRelease --stacktrace --no-daemon
           else
             ./gradlew assembleDebug --stacktrace --no-daemon
@@ -95,7 +130,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: SmsForwarder-APKs
+          name: SmsForwarder-APKs-${{ steps.bt.outputs.build_type }}
           path: |
             build/app/outputs/apk/**/*.apk
           if-no-files-found: error
