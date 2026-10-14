@@ -59,8 +59,14 @@ jobs:
           sed -i 's/isNeedClean=.*/isNeedClean=false/' gradle.properties
           # we have a local debug keystore
           sed -i 's/isNeedPackage=.*/isNeedPackage=true/' gradle.properties
-          # Aliyun mirrors often 502 from GitHub-hosted runners; drop them
-          sed -i '/maven.aliyun.com/d' build.gradle versions.gradle
+          # Keep only aliyun "public" (hosts jcenter leftovers). Drop aliyun
+          # google/central mirrors — they 502/404 and break Gradle resolution.
+          sed -i '/maven.aliyun.com\/repository\/google/d' build.gradle
+          sed -i '/maven.aliyun.com\/repository\/central/d' build.gradle
+          # ensure public mirror exists once
+          if ! grep -q 'maven.aliyun.com/repository/public' build.gradle; then
+            sed -i "/mavenCentral()/a\        maven { url 'https://maven.aliyun.com/repository/public' }" build.gradle
+          fi
           echo "---- repositories (build.gradle) ----"
           grep -n "maven\|google\|jitpack" build.gradle || true
           echo "---- gradle.properties ----"
