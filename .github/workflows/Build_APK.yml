@@ -1,0 +1,92 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Build type"
+        required: true
+        default: debug
+        type: choice
+        options:
+          - debug
+          - release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+          cache: gradle
+
+      - name: Create debug keystore
+        run: |
+          mkdir -p keystore
+          keytool -genkeypair -v \
+            -keystore keystore/debug.jks \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=SmsForwarder Debug,O=mengfei0053,C=CN"
+          printf '%s\n' \
+            'storeFile=../keystore/debug.jks' \
+            'storePassword=android' \
+            'keyAlias=androiddebugkey' \
+            'keyPassword=android' \
+            > keystore/keystore.properties
+          echo "keystore.properties:"
+          cat keystore/keystore.properties
+
+      - name: Tune Gradle for CI
+        run: |
+          # GitHub-hosted runners ~7GB RAM; upstream asks for 16g
+          sed -i 's/org.gradle.jvmargs=.*/org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8/' gradle.properties
+          # avoid preBuild clean on CI
+          sed -i 's/isNeedClean=.*/isNeedClean=false/' gradle.properties
+          # we have a local debug keystore
+          sed -i 's/isNeedPackage=.*/isNeedPackage=true/' gradle.properties
+          echo "---- gradle.properties ----"
+          cat gradle.properties
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build APK
+        env:
+          BUILD_TYPE: ${{ github.event.inputs.build_type || 'debug' }}
+        run: |
+          if [ "$BUILD_TYPE" = "release" ]; then
+            ./gradlew assembleRelease --stacktrace --no-daemon
+          else
+            ./gradlew assembleDebug --stacktrace --no-daemon
+          fi
+
+      - name: List outputs
+        if: always()
+        run: |
+          find build/app/outputs -type f -name '*.apk' 2>/dev/null | sort || true
+          ls -lah build/app/outputs/apk/*/ 2>/dev/null || true
+
+      - name: Upload APK artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmsForwarder-APKs
+          path: |
+            build/app/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 14
