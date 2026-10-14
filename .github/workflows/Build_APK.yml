@@ -59,6 +59,20 @@ jobs:
           sed -i 's/isNeedClean=.*/isNeedClean=false/' gradle.properties
           # we have a local debug keystore
           sed -i 's/isNeedPackage=.*/isNeedPackage=true/' gradle.properties
+          # Aliyun mirrors often 502 from GitHub-hosted runners; drop them
+          python3 - <<'PY'
+          from pathlib import Path
+          for rel in ["build.gradle", "versions.gradle"]:
+              path = Path(rel)
+              text = path.read_text()
+              lines = []
+              for line in text.splitlines(True):
+                  if "maven.aliyun.com" in line:
+                      continue
+                  lines.append(line)
+              path.write_text("".join(lines))
+              print(f"stripped aliyun from {rel}")
+          PY
           echo "---- gradle.properties ----"
           cat gradle.properties
 
